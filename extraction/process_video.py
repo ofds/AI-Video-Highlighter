@@ -289,7 +289,7 @@ class VideoProcessor:
             moments_text = interesting_moments_match.group(1)
             
             # Find all individual moments within the block
-            # This regex looks for a block of text starting with "Title:"
+            # This regex looks for a block of text starting with "Title:" and captures until the next numbered item or the end of the string.
             moment_blocks = re.findall(r"Title:.*?(?=\n\s*\d+\.|\Z)", moments_text, re.DOTALL)
 
             for block in moment_blocks:
@@ -319,13 +319,16 @@ class VideoProcessor:
 
             for i, (start, end) in enumerate(time_segments):
                 clip_filename = temp_path / f"clip_{i}.mp4"
-                # Command to cut a clip from the source video without re-encoding
+                # ** EDITED COMMAND **
+                # This command structure is more robust for preserving audio.
+                # -i comes before -ss and -to, making them accurate output options.
+                # -c copy explicitly copies both video and audio streams.
                 command = [
                     "ffmpeg", "-y",
+                    "-i", str(self.video_path),
                     "-ss", start,
                     "-to", end,
-                    "-i", str(self.video_path),
-                    "-c", "copy",  # Use stream copy for extreme speed and original quality
+                    "-c", "copy",
                     str(clip_filename)
                 ]
                 try:
