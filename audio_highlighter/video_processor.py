@@ -8,13 +8,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import whisper
 
 # Import from your new modules
-from api_client import OpenRouterClient
-from config import (
+from .api_client import OpenRouterClient
+from .config import (
     OPENROUTER_API_KEY, TRANSCRIPT_FILENAME_SUFFIX, SRT_FILENAME_SUFFIX,
     HIGHLIGHTS_FILENAME_SUFFIX, TEMP_AUDIO_FILENAME_SUFFIX,
     HIGHLIGHT_VIDEO_FILENAME_SUFFIX
 )
-from utils import format_timestamp
+from .utils import format_timestamp
 
 class VideoProcessor:
     """Handles the entire video processing workflow."""

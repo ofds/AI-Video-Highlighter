@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 
 # You will need to import from your new config file
-from config import OPENROUTER_API_KEY, YOUR_SITE_URL, YOUR_SITE_NAME, OPENROUTER_API_URL, DEFAULT_LLM_MODEL
+from .config import OPENROUTER_API_KEY, YOUR_SITE_URL, YOUR_SITE_NAME, OPENROUTER_API_URL, DEFAULT_LLM_MODEL
 
 class OpenRouterClient:
     """A client for interacting with the OpenRouter AI API."""

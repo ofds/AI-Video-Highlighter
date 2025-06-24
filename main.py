@@ -7,11 +7,11 @@ from pathlib import Path
 from logging.handlers import QueueHandler
 
 # Import the core logic and config
-from process_video import VideoProcessor
-from config import DEFAULT_WHISPER_MODEL, OPENROUTER_API_KEY
+from audio_highlighter.video_processor import VideoProcessor
+from audio_highlighter.config import DEFAULT_WHISPER_MODEL, OPENROUTER_API_KEY
 
 # Import the new downloader function
-from youtube_downloader import download_youtube_video
+from audio_highlighter.youtube_downloader import download_youtube_video
 
 class App(ctk.CTk):
     def __init__(self):
