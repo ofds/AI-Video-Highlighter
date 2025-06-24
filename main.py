@@ -8,10 +8,11 @@ from logging.handlers import QueueHandler
 from typing import Optional, List, Dict, Tuple, Any
 
 from audio_highlighter.video_processor import VideoProcessor
-from audio_highlighter.config import OPENROUTER_API_KEY, AVAILABLE_WHISPER_MODELS, AVAILABLE_LLM_MODELS, DEFAULT_WHISPER_MODEL, DEFAULT_LLM_MODEL
+from audio_highlighter.config import OPENROUTER_API_KEY, AVAILABLE_WHISPER_MODELS, DEFAULT_WHISPER_MODEL, DEFAULT_LLM_MODEL
 from audio_highlighter.youtube_downloader import download_youtube_video
 from audio_highlighter.utils import is_ffmpeg_installed
 from audio_highlighter.highlight_editor_gui import HighlightEditorWindow
+from audio_highlighter.api_client import OpenRouterClient
 
 class App(ctk.CTk):
     def __init__(self):
@@ -30,6 +31,7 @@ class App(ctk.CTk):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1) 
 
+        # ... (URL and Local File frames remain the same)
         self.url_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.url_frame.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
         self.url_frame.grid_columnconfigure(1, weight=1)
@@ -50,6 +52,7 @@ class App(ctk.CTk):
         self.process_button = ctk.CTkButton(self.local_frame, text="Analyze Video", command=self.start_analysis_thread, state="disabled")
         self.process_button.grid(row=0, column=2, padx=(10, 0))
 
+
         self.model_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.model_frame.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
         self.model_frame.grid_columnconfigure(1, weight=1)
@@ -61,7 +64,8 @@ class App(ctk.CTk):
         self.whisper_model_menu.set(DEFAULT_WHISPER_MODEL)
         self.llm_label = ctk.CTkLabel(self.model_frame, text="LLM Model:")
         self.llm_label.grid(row=0, column=2, padx=(0,10))
-        self.llm_model_menu = ctk.CTkOptionMenu(self.model_frame, values=AVAILABLE_LLM_MODELS)
+        # Initialize with default and then update dynamically
+        self.llm_model_menu = ctk.CTkOptionMenu(self.model_frame, values=[DEFAULT_LLM_MODEL])
         self.llm_model_menu.grid(row=0, column=3, sticky="ew")
         self.llm_model_menu.set(DEFAULT_LLM_MODEL)
 
@@ -80,6 +84,34 @@ class App(ctk.CTk):
         logging.basicConfig(level=logging.INFO, handlers=[self.queue_handler])
         self.after(100, self.poll_log_queue)
         self.check_dependencies()
+        
+        # Start a thread to fetch models on launch
+        self.fetch_models_thread = threading.Thread(target=self.fetch_and_update_llm_models, daemon=True)
+        self.fetch_models_thread.start()
+
+    def fetch_and_update_llm_models(self):
+        """Fetches the list of free LLM models and schedules a UI update."""
+        logging.info("Starting thread to fetch LLM models.")
+        if not OPENROUTER_API_KEY:
+            logging.error("Cannot fetch models, OPENROUTER_API_KEY is not set.")
+            return
+
+        client = OpenRouterClient(api_key=OPENROUTER_API_KEY)
+        free_models = client.get_free_models()
+        self.after(0, self.update_llm_model_menu, free_models)
+
+    def update_llm_model_menu(self, models: List[str]):
+        """Updates the LLM model dropdown menu on the main GUI thread."""
+        if models:
+            logging.info(f"Updating LLM models dropdown with {len(models)} models.")
+            self.llm_model_menu.configure(values=models)
+            if DEFAULT_LLM_MODEL in models:
+                self.llm_model_menu.set(DEFAULT_LLM_MODEL)
+            else:
+                self.llm_model_menu.set(models[0])
+        else:
+            logging.warning("Could not fetch free models from OpenRouter. Using default.")
+            self.status_label.configure(text="Warning: Could not fetch updated model list.", text_color="orange")
 
     def set_ui_state(self, is_enabled: bool):
         """Helper function to enable/disable main UI controls."""
@@ -91,6 +123,7 @@ class App(ctk.CTk):
         self.whisper_model_menu.configure(state=state)
         self.llm_model_menu.configure(state=state)
 
+    # --- Other methods (check_dependencies, run_analysis, etc.) remain the same ---
     def check_dependencies(self):
         if not is_ffmpeg_installed():
             self.set_ui_state(is_enabled=False)

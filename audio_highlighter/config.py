@@ -19,10 +19,4 @@ DEFAULT_WHISPER_MODEL = "base.en"
 
 # --- V2.0 Additions ---
 AVAILABLE_WHISPER_MODELS = ["tiny.en", "base.en", "small.en", "medium.en", "large-v3"]
-AVAILABLE_LLM_MODELS = [
-    "mistralai/mistral-7b-instruct",
-    "google/gemma-7b-it",
-    "databricks/dbrx-instruct",
-    "nousresearch/nous-hermes-2-mixtral-8x7b-dpo",
-    "deepseek/deepseek-chat-v3-0324:free"
-]
+# The list of available LLM models will now be fetched dynamically.
