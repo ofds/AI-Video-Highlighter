@@ -5,11 +5,16 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
+import queue
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from logging.handlers import QueueHandler
 
 import requests
 import whisper
+import customtkinter as ctk
+from customtkinter import filedialog
 
 # --- Configuration ---
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -25,36 +30,22 @@ TEMP_AUDIO_FILENAME_SUFFIX = "_temp_audio.wav"
 TRANSCRIPT_FILENAME_SUFFIX = "_transcript.txt"
 SRT_FILENAME_SUFFIX = "_transcript.srt"
 HIGHLIGHTS_FILENAME_SUFFIX = "_highlights.txt"
-HIGHLIGHT_VIDEO_FILENAME_SUFFIX = "_highlight.mp4" # New for the final video
+HIGHLIGHT_VIDEO_FILENAME_SUFFIX = "_highlight.mp4"
 DEFAULT_WHISPER_MODEL = "base.en"
 
-
-# --- Setup Logging ---
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-
-
+# --- Helper Functions (format_timestamp) ---
 def format_timestamp(seconds: float, srt_format: bool = False) -> str:
     """Formats a timestamp in seconds to [HH:MM:SS] or SRT format."""
     assert seconds >= 0, "non-negative timestamp expected"
     milliseconds = round(seconds * 1000.0)
-
-    hours = milliseconds // 3_600_000
-    milliseconds %= 3_600_000
-
-    minutes = milliseconds // 60_000
-    milliseconds %= 60_000
-
-    seconds = milliseconds // 1_000
-    milliseconds %= 1_000
-
+    hours, milliseconds = divmod(milliseconds, 3_600_000)
+    minutes, milliseconds = divmod(milliseconds, 60_000)
+    seconds, milliseconds = divmod(milliseconds, 1_000)
     if srt_format:
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        return f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d},{int(milliseconds):03d}"
+    return f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
 
-
+# --- Core Logic Classes (OpenRouterClient, VideoProcessor) ---
 class OpenRouterClient:
     """A client for interacting with the OpenRouter AI API."""
     def __init__(self, api_key: str):
@@ -62,38 +53,66 @@ class OpenRouterClient:
             raise ValueError("API key for OpenRouter cannot be None or empty.")
         self.api_key = api_key
         self.headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": YOUR_SITE_URL,
-            "X-Title": YOUR_SITE_NAME,
+            "Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json",
+            "HTTP-Referer": YOUR_SITE_URL, "X-Title": YOUR_SITE_NAME,
         }
 
     def get_highlights_from_transcript(self, full_transcript: str) -> Optional[str]:
-        # Cleaned up the prompt to be a proper multi-line f-string to avoid syntax warnings
-        # and improve readability for the LLM.
-        prompt = f"""I am providing you with the transcript of a YouTube video. Your task is to analyze the full transcript and extract structured insights. This output will be used in a further processing phase, so **strictly follow the format** provided below and ensure **consistency and machine-readability**.
+        logging.info("Requesting highlights from LLM...")
+        prompt = f"""Your prompt is already quite clear and structured, but to **optimize it for better performance**, especially when used with structured LLMs like Gemini or GPT, you can improve the precision, reduce ambiguity, and emphasize consistency with parsing-friendly wording.
+
+Here’s an improved version:
 
 ---
 
-### 🟩 Your tasks:
+I am providing the **full transcript of a YouTube video**. Your task is to **analyze it thoroughly** and extract **structured, machine-readable insights**. The output will be used for further automated processing, so **follow the format exactly** as described below.
 
-#### 1. Identify the **most interesting moments** in the video:
-These can be engaging conversations, funny remarks, insightful commentary, or high-energy moments. For each moment, provide:
-- **Title**: A short, descriptive title.
-- **Start_Time**: The beginning timestamp `hh:mm:ss`.
-- **End_Time**: The ending timestamp `hh:mm:ss`.
-- **Why_Interesting**: 1-2 concise sentences explaining the appeal.
+✅ **Important Instructions**:
 
-#### 2. Suggest **good cut points**:
-These are natural transitions or breaks (e.g., topic shifts, pauses). For each cut point, provide:
-- **Cut_Timestamp**: The timestamp `hh:mm:ss`.
-- **Reason**: A short justification for the cut.
+* Do **not** skip or summarize the transcript—**analyze it fully**.
+* Output must match the format **precisely** for successful parsing.
+* Use consistent indentation and spacing.
+* **Do not add extra commentary or explanations** outside the required output.
 
 ---
 
-### 🟦 REQUIRED OUTPUT FORMAT (strictly follow this markdown structure):
+### 🟩 TASK 1 – Identify the most interesting moments:
 
-#### Interesting_Moments:
+These may include:
+
+* Engaging dialogue
+* Funny or emotional highlights
+* Insightful commentary
+* High-energy or dramatic moments
+
+**For each moment, provide the following details:**
+
+* `Title`: A concise, descriptive name
+* `Start_Time`: Timestamp in `hh:mm:ss` format
+* `End_Time`: Timestamp in `hh:mm:ss` format
+* `Why_Interesting`: 1–2 sentences explaining the significance
+
+---
+
+### 🟦 TASK 2 – Suggest natural cut points:
+
+These should be moments where a segment can logically begin or end, such as:
+
+* Topic transitions
+* Speaker changes
+* Long pauses or scene shifts
+
+**For each cut point, provide:**
+
+* `Cut_Timestamp`: Timestamp in `hh:mm:ss` format
+* `Reason`: Brief explanation (1 sentence)
+
+---
+
+### 🔷 OUTPUT FORMAT (Strictly follow this Markdown format):
+
+#### Interesting\_Moments:
+
 ```
 1.
 Title: [Title]
@@ -108,7 +127,8 @@ End_Time: hh:mm:ss
 Why_Interesting: [Explanation]
 ```
 
-#### Suggested_Cut_Points:
+#### Suggested\_Cut\_Points:
+
 ```
 1.
 Cut_Timestamp: hh:mm:ss
@@ -118,17 +138,21 @@ Reason: [Explanation]
 Cut_Timestamp: hh:mm:ss
 Reason: [Explanation]
 ```
+
 ---
 
-Please output only in the exact format above. Here is the transcript:
+⬇️ Begin your analysis below. Here is the full transcript:
 
 {full_transcript}
+
+---
 """
         data = {"model": DEFAULT_LLM_MODEL, "messages": [{"role": "user", "content": prompt}], "max_tokens": 1500, "temperature": 0.5}
         try:
             response = requests.post(url=OPENROUTER_API_URL, headers=self.headers, data=json.dumps(data))
             response.raise_for_status()
             response_data = response.json()
+            logging.info("LLM response received successfully.")
             return response_data['choices'][0]['message']['content'].strip()
         except requests.exceptions.RequestException as e:
             logging.error(f"API request failed: {e}")
@@ -138,53 +162,17 @@ Please output only in the exact format above. Here is the transcript:
 
 class VideoProcessor:
     """Handles the entire video processing workflow."""
-
-    def __init__(self, video_path: Path, output_dir: Path, whisper_model: str):
+    def __init__(self, video_path: Path, output_dir: Path, whisper_model_name: str):
         self.video_path = video_path
         self.output_dir = output_dir
-        
         video_stem = self.video_path.stem
         self.transcript_path = self.output_dir / f"{video_stem}{TRANSCRIPT_FILENAME_SUFFIX}"
         self.srt_path = self.output_dir / f"{video_stem}{SRT_FILENAME_SUFFIX}"
         self.highlights_path = self.output_dir / f"{video_stem}{HIGHLIGHTS_FILENAME_SUFFIX}"
         self.temp_audio_path = self.output_dir / f"{video_stem}{TEMP_AUDIO_FILENAME_SUFFIX}"
-        # New path for the final highlight video
         self.highlight_video_path = self.output_dir / f"{video_stem}{HIGHLIGHT_VIDEO_FILENAME_SUFFIX}"
-
-        self.whisper_model = self._load_whisper_model(whisper_model)
+        self.whisper_model_name = whisper_model_name
         self.llm_client = OpenRouterClient(OPENROUTER_API_KEY) if OPENROUTER_API_KEY else None
-
-    @classmethod
-    def run_with_hardcoded_path(cls):
-        """Initializes and runs the processor using a hardcoded path."""
-        video_to_process = Path(r"C:\Codigos\audio-highlighter\videos\Our FIFA Club World Cup Predictions!.mp4")
-
-        if not video_to_process.is_file():
-            logging.error(f"HARDCODED PATH ERROR: Video file not found at '{video_to_process}'")
-            return
-
-        logging.info(f"Running in hardcoded mode for: {video_to_process.name}")
-        
-        output_directory = Path("output") 
-        whisper_model_name = DEFAULT_WHISPER_MODEL
-        
-        try:
-            processor = cls(
-                video_path=video_to_process,
-                output_dir=output_directory,
-                whisper_model=whisper_model_name
-            )
-            processor.process_video()
-        except Exception as e:
-            logging.error(f"An unexpected error occurred: {e}", exc_info=True)
-
-    def _load_whisper_model(self, model_name: str):
-        logging.info(f"Loading Whisper model: {model_name}...")
-        try:
-            return whisper.load_model(model_name)
-        except Exception as e:
-            logging.error(f"Failed to load Whisper model '{model_name}': {e}")
-            raise
 
     def process_video(self):
         """Main method to run the entire processing pipeline."""
@@ -221,77 +209,57 @@ class VideoProcessor:
         
         # --- Step 4: Cleanup ---
         self._cleanup()
-        logging.info(f"Processing complete for '{self.video_path.name}'.")
+        logging.info(f"✅ Processing complete for '{self.video_path.name}'.")
 
     def _extract_audio(self) -> bool:
         logging.info(f"Extracting audio from '{self.video_path.name}'...")
         command = ["ffmpeg", "-y", "-i", str(self.video_path), "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", str(self.temp_audio_path)]
         try:
             subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            logging.info(f"Audio extracted successfully to '{self.temp_audio_path.name}'")
+            logging.info(f"Audio extracted successfully.")
             return True
         except (FileNotFoundError, subprocess.CalledProcessError) as e:
             logging.error(f"Error during audio extraction. Make sure FFmpeg is installed and in your PATH. Details: {e}")
             return False
 
+    def _format_transcript_for_llm(self, segments: List[Dict[str, Any]]) -> str:
+        """Formats the transcript segments into a single string for the LLM."""
+        return "".join(
+            f"[{format_timestamp(s['start'])}] {s['text'].strip()}\n" for s in segments
+        )
+
+
     def _transcribe_audio(self) -> Optional[List[Dict[str, Any]]]:
-        logging.info("Transcribing audio...")
+        logging.info(f"Loading Whisper model '{self.whisper_model_name}'...")
         try:
-            result = self.whisper_model.transcribe(str(self.temp_audio_path))
+            model = whisper.load_model(self.whisper_model_name)
+            logging.info("Model loaded. Starting transcription...")
+            result = model.transcribe(str(self.temp_audio_path))
             logging.info("Transcription complete.")
             return result.get("segments")
         except Exception as e:
             logging.error(f"Error during transcription: {e}")
             return None
 
-    def _format_transcript_for_llm(self, segments: List[Dict[str, Any]]) -> str:
-        return "".join(f"[{format_timestamp(s['start'])}] {s['text'].strip()}\n" for s in segments)
-
-    def _save_transcripts(self, segments: List[Dict[str, Any]]):
-        with open(self.transcript_path, "w", encoding="utf-8") as f:
-            f.write(self._format_transcript_for_llm(segments))
-        logging.info(f"Transcript saved to {self.transcript_path}")
-
-        with open(self.srt_path, "w", encoding="utf-8") as f:
-            for i, segment in enumerate(segments):
-                f.write(f"{i + 1}\n")
-                start = format_timestamp(segment['start'], srt_format=True)
-                end = format_timestamp(segment['end'], srt_format=True)
-                f.write(f"{start} --> {end}\n")
-                f.write(f"{segment['text'].strip()}\n\n")
-        logging.info(f"SRT captions saved to {self.srt_path}")
-
     def _generate_and_save_highlights(self, full_transcript: str) -> Optional[str]:
-        """Generates highlights, saves them, and returns the text content."""
-        logging.info("Generating highlights with LLM...")
         highlights = self.llm_client.get_highlights_from_transcript(full_transcript)
         if highlights:
-            with open(self.highlights_path, "w", encoding="utf-8") as f:
-                f.write(highlights)
-            logging.info(f"--- Highlights ---\n{highlights}")
+            with open(self.highlights_path, "w", encoding="utf-8") as f: f.write(highlights)
             logging.info(f"Highlights saved to {self.highlights_path}")
             return highlights
-        else:
-            logging.error("Could not retrieve highlights from the LLM.")
-            return None
+        logging.error("Could not retrieve highlights from the LLM.")
+        return None
 
     def _parse_highlights_for_video(self, highlights_text: str) -> List[Tuple[str, str]]:
-        """Parses the LLM output to extract start and end times for video clips."""
         logging.info("Parsing timestamps from highlights text...")
         segments = []
         try:
-            # Find the "Interesting_Moments" block using regex
             interesting_moments_match = re.search(r"Interesting_Moments:\s*```(.*?)```", highlights_text, re.DOTALL)
             if not interesting_moments_match:
                 logging.warning("Could not find 'Interesting_Moments' block in highlights file.")
                 return []
-
             moments_text = interesting_moments_match.group(1)
-            
-            # Find all individual moments within the block
-            # This regex looks for a block of text starting with "Title:" and captures until the next numbered item or the end of the string.
             moment_blocks = re.findall(r"Title:.*?(?=\n\s*\d+\.|\Z)", moments_text, re.DOTALL)
-
             for block in moment_blocks:
                 start_time_match = re.search(r"Start_Time:\s*(\d{2}:\d{2}:\d{2})", block)
                 end_time_match = re.search(r"End_Time:\s*(\d{2}:\d{2}:\d{2})", block)
@@ -300,112 +268,176 @@ class VideoProcessor:
         except Exception as e:
             logging.error(f"Failed to parse highlights for video segments: {e}")
             return []
-            
-        logging.info(f"Found {len(segments)} highlight segments to compile into a video.")
+        logging.info(f"Found {len(segments)} segments to compile into a highlight video.")
         return segments
 
     def _create_highlight_video(self, time_segments: List[Tuple[str, str]]):
-        """Creates a highlight video by cutting and stitching clips with FFmpeg."""
-        if not time_segments:
-            logging.info("No time segments found, skipping highlight video creation.")
-            return
-
         logging.info("Creating highlight video...")
-        
-        # Use a temporary directory that gets cleaned up automatically
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             clip_files = []
-
             for i, (start, end) in enumerate(time_segments):
                 clip_filename = temp_path / f"clip_{i}.mp4"
-                # ** EDITED COMMAND **
-                # This command structure is more robust for preserving audio.
-                # -i comes before -ss and -to, making them accurate output options.
-                # -c copy explicitly copies both video and audio streams.
-                command = [
-                    "ffmpeg", "-y",
-                    "-i", str(self.video_path),
-                    "-ss", start,
-                    "-to", end,
-                    "-c", "copy",
-                    str(clip_filename)
-                ]
+                command = ["ffmpeg", "-y", "-i", str(self.video_path), "-ss", start, "-to", end, "-c", "copy", str(clip_filename)]
                 try:
                     subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     clip_files.append(clip_filename)
                 except (subprocess.CalledProcessError, FileNotFoundError) as e:
                     logging.error(f"Failed to create clip {i} with ffmpeg.")
-                    if isinstance(e, subprocess.CalledProcessError):
-                        logging.error(f"FFmpeg stderr: {e.stderr.decode()}")
-                    return # Stop if a clip fails
-
+                    if isinstance(e, subprocess.CalledProcessError): logging.error(f"FFmpeg stderr: {e.stderr.decode()}")
+                    return
             if not clip_files:
                 logging.error("No clips were created, cannot generate highlight video.")
                 return
 
-            # Create a file list for ffmpeg's concat demuxer
             concat_list_path = temp_path / "concat_list.txt"
             with open(concat_list_path, "w") as f:
-                for clip in clip_files:
-                    # Use resolve() to get an absolute path, which is safer for ffmpeg
-                    f.write(f"file '{clip.resolve()}'\n")
+                for clip in clip_files: f.write(f"file '{clip.resolve()}'\n")
 
-            # Command to stitch the clips together
-            concat_command = [
-                "ffmpeg", "-y",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", str(concat_list_path),
-                "-c", "copy",
-                str(self.highlight_video_path)
-            ]
+            concat_command = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list_path), "-c", "copy", str(self.highlight_video_path)]
             try:
                 subprocess.run(concat_command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                logging.info(f"Successfully created highlight video: {self.highlight_video_path}")
+                logging.info(f"✅ Successfully created highlight video: {self.highlight_video_path}")
             except (subprocess.CalledProcessError, FileNotFoundError) as e:
                 logging.error(f"Failed to stitch clips with ffmpeg.")
-                if isinstance(e, subprocess.CalledProcessError):
-                    logging.error(f"FFmpeg stderr: {e.stderr.decode()}")
+                if isinstance(e, subprocess.CalledProcessError): logging.error(f"FFmpeg stderr: {e.stderr.decode()}")
+
+    def _save_transcripts(self, segments: List[Dict[str, Any]]):
+        with open(self.transcript_path, "w", encoding="utf-8") as f: f.write(self._format_transcript_for_llm(segments))
+        logging.info(f"Transcript saved to {self.transcript_path}")
+        with open(self.srt_path, "w", encoding="utf-8") as f:
+            for i, segment in enumerate(segments):
+                f.write(f"{i + 1}\n")
+                start, end = format_timestamp(segment['start'], srt_format=True), format_timestamp(segment['end'], srt_format=True)
+                f.write(f"{start} --> {end}\n")
+                f.write(f"{segment['text'].strip()}\n\n")
+        logging.info(f"SRT captions saved to {self.srt_path}")
 
     def _cleanup(self):
-        """Removes temporary files."""
         try:
-            if self.temp_audio_path.exists():
-                self.temp_audio_path.unlink()
-                logging.info(f"Removed temporary audio file: {self.temp_audio_path.name}")
+            if self.temp_audio_path.exists(): self.temp_audio_path.unlink()
         except OSError as e:
-            logging.error(f"Error removing temporary file: {e}")
+            logging.error(f"Error removing temporary audio file: {e}")
 
-def cli_main():
-    """Main entry point for command-line execution."""
-    parser = argparse.ArgumentParser(description="Transcribe a video and generate a highlight reel.")
-    parser.add_argument("video_path", type=Path, help="The path to the video file.")
-    parser.add_argument("--model", type=str, default=DEFAULT_WHISPER_MODEL, help="Whisper model name.")
-    parser.add_argument("--output-dir", type=Path, default=Path("output"), help="Directory to save output files.")
-    args = parser.parse_args()
+# --- GUI Application Class ---
+class App(ctk.CTk):
+    def __init__(self):
+        super().__init__()
 
-    if not args.video_path.is_file():
-        logging.error(f"Error: Video file not found at '{args.video_path}'")
-        return
+        self.title("AI Video Highlighter")
+        self.geometry("800x600")
+        ctk.set_appearance_mode("dark")
+        self.video_path = None
+        self.processing_thread = None
 
-    try:
-        processor = VideoProcessor(
-            video_path=args.video_path,
-            output_dir=args.output_dir,
-            whisper_model=args.model
+        # --- Configure grid layout ---
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        # --- Top Frame for Controls ---
+        self.top_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.top_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+        self.top_frame.grid_columnconfigure(1, weight=1)
+
+        self.select_button = ctk.CTkButton(self.top_frame, text="Select Video", command=self.select_video_file)
+        self.select_button.grid(row=0, column=0, padx=(0, 10))
+
+        self.path_label = ctk.CTkLabel(self.top_frame, text="No video selected", text_color="gray", anchor="w")
+        self.path_label.grid(row=0, column=1, sticky="ew")
+
+        self.process_button = ctk.CTkButton(self.top_frame, text="Process Video", command=self.start_processing_thread, state="disabled")
+        self.process_button.grid(row=0, column=2, padx=(10, 0))
+
+        # --- Log Textbox ---
+        self.log_textbox = ctk.CTkTextbox(self, state="disabled", text_color="#E0E0E0")
+        self.log_textbox.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="nsew")
+
+        # --- Status Bar ---
+        self.status_label = ctk.CTkLabel(self, text="Ready", anchor="w")
+        self.status_label.grid(row=2, column=0, padx=10, pady=(5, 10), sticky="ew")
+
+        # --- Setup logging to redirect to GUI ---
+        self.log_queue = queue.Queue()
+        self.queue_handler = QueueHandler(self.log_queue)
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', handlers=[self.queue_handler])
+        
+        self.after(100, self.poll_log_queue)
+
+    def select_video_file(self):
+        """Opens a file dialog to select a video."""
+        path = filedialog.askopenfilename(
+            title="Select a Video File",
+            filetypes=(("Video Files", "*.mp4 *.mkv *.avi *.mov"), ("All files", "*.*"))
         )
-        processor.process_video()
-    except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}", exc_info=True)
+        if path:
+            self.video_path = Path(path)
+            self.path_label.configure(text=self.video_path.name)
+            self.process_button.configure(state="normal")
+            self.log_textbox.configure(state="normal")
+            self.log_textbox.delete("1.0", "end")
+            self.log_textbox.insert("end", f"Selected video: {self.video_path}\n")
+            self.log_textbox.configure(state="disabled")
+            self.status_label.configure(text=f"Ready to process '{self.video_path.name}'")
+
+    def start_processing_thread(self):
+        """Starts the video processing in a separate thread to avoid freezing the GUI."""
+        if self.processing_thread and self.processing_thread.is_alive():
+            logging.warning("Processing is already in progress.")
+            return
+
+        self.process_button.configure(state="disabled")
+        self.select_button.configure(state="disabled")
+        
+        self.processing_thread = threading.Thread(target=self.run_video_processor, daemon=True)
+        self.processing_thread.start()
+
+    def run_video_processor(self):
+        """The target function for the processing thread."""
+        if not self.video_path:
+            logging.error("No video file selected.")
+            return
+
+        try:
+            output_dir = Path("output")
+            processor = VideoProcessor(
+                video_path=self.video_path,
+                output_dir=output_dir,
+                whisper_model_name=DEFAULT_WHISPER_MODEL
+            )
+            processor.process_video()
+        except Exception as e:
+            logging.error(f"A critical error occurred: {e}", exc_info=True)
+        finally:
+            # Safely re-enable buttons from the main thread
+            self.after(0, self.on_processing_finished)
+
+    def on_processing_finished(self):
+        """Callback function to run on the main thread after processing is done."""
+        self.process_button.configure(state="normal")
+        self.select_button.configure(state="normal")
+        self.status_label.configure(text="Processing finished. Ready for next video.")
+
+    def poll_log_queue(self):
+        """Periodically checks the log queue and updates the textbox."""
+        while True:
+            try:
+                record = self.log_queue.get(block=False)
+            except queue.Empty:
+                break
+            else:
+                msg = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s').format(record)
+                self.log_textbox.configure(state="normal")
+                self.log_textbox.insert("end", msg + "\n")
+                self.log_textbox.see("end") # Auto-scroll
+                self.log_textbox.configure(state="disabled")
+                self.status_label.configure(text=record.getMessage())
+        self.after(100, self.poll_log_queue)
 
 
 if __name__ == "__main__":
-    RUN_WITH_HARDCODED_PATH = True
-
     if not OPENROUTER_API_KEY:
-        logging.error("FATAL: OPENROUTER_API_KEY environment variable not set.")
-    elif RUN_WITH_HARDCODED_PATH:
-        VideoProcessor.run_with_hardcoded_path()
-    else:
-        cli_main()
+        # This check is crucial. The GUI will start but processing will fail.
+        # A popup could be added here for a better user experience.
+        print("FATAL: OPENROUTER_API_KEY environment variable not set.")
+    app = App()
+    app.mainloop()
