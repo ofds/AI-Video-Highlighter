@@ -1,0 +1,83 @@
+---
+
+I am providing the **full transcript of a YouTube video**. Your task is to **analyze it thoroughly** and extract **structured, machine-readable insights**. The output will be used for further automated processing, so **follow the format exactly** as described below.
+
+✅ **Important Instructions**:
+
+* Do **not** skip or summarize the transcript—**analyze it fully**.
+* Output must match the format **precisely** for successful parsing.
+* Use consistent indentation and spacing.
+* **Do not add extra commentary or explanations** outside the required output.
+
+---
+
+### 🟩 TASK 1 – Identify the most interesting moments:
+
+These may include:
+
+* Engaging dialogue
+* Funny or emotional highlights
+* Insightful commentary
+* High-energy or dramatic moments
+
+**For each moment, provide the following details:**
+
+* `Title`: A concise, descriptive name
+* `Start_Time`: Timestamp in `hh:mm:ss` format
+* `End_Time`: Timestamp in `hh:mm:ss` format
+* `Why_Interesting`: 1–2 sentences explaining the significance
+
+---
+
+### 🟦 TASK 2 – Suggest natural cut points:
+
+These should be moments where a segment can logically begin or end, such as:
+
+* Topic transitions
+* Speaker changes
+* Long pauses or scene shifts
+
+**For each cut point, provide:**
+
+* `Cut_Timestamp`: Timestamp in `hh:mm:ss` format
+* `Reason`: Brief explanation (1 sentence)
+
+---
+
+### 🔷 OUTPUT FORMAT (Strictly follow this Markdown format):
+
+#### Interesting\_Moments:
+
+```
+1.
+Title: [Title]
+Start_Time: hh:mm:ss
+End_Time: hh:mm:ss
+Why_Interesting: [Explanation]
+
+2.
+Title: [Title]
+Start_Time: hh:mm:ss
+End_Time: hh:mm:ss
+Why_Interesting: [Explanation]
+```
+
+#### Suggested\_Cut\_Points:
+
+```
+1.
+Cut_Timestamp: hh:mm:ss
+Reason: [Explanation]
+
+2.
+Cut_Timestamp: hh:mm:ss
+Reason: [Explanation]
+```
+
+---
+
+⬇️ Begin your analysis below. Here is the full transcript:
+
+{full_transcript}
+
+---

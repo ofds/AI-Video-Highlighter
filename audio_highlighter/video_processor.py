@@ -3,7 +3,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Callable
 
 import whisper
 
@@ -18,7 +18,7 @@ from .utils import format_timestamp
 
 class VideoProcessor:
     """Handles the entire video processing workflow."""
-    def __init__(self, video_path: Path, output_dir: Path, whisper_model_name: str):
+    def __init__(self, video_path: Path, output_dir: Path, whisper_model: str, llm_model: str, progress_callback: Optional[Callable] = None):
         self.video_path = video_path
         self.output_dir = output_dir
         video_stem = self.video_path.stem
@@ -27,23 +27,35 @@ class VideoProcessor:
         self.highlights_path = self.output_dir / f"{video_stem}{HIGHLIGHTS_FILENAME_SUFFIX}"
         self.temp_audio_path = self.output_dir / f"{video_stem}{TEMP_AUDIO_FILENAME_SUFFIX}"
         self.highlight_video_path = self.output_dir / f"{video_stem}{HIGHLIGHT_VIDEO_FILENAME_SUFFIX}"
-        self.whisper_model_name = whisper_model_name
+        self.whisper_model = whisper_model
+        self.llm_model = llm_model
         self.llm_client = OpenRouterClient(OPENROUTER_API_KEY) if OPENROUTER_API_KEY else None
+        self.progress_callback = progress_callback
 
     def process_video(self):
         """Main method to run the entire processing pipeline."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
+        total_steps = 5  # Define the total number of steps for the progress bar
+
         # --- Step 1: Get Transcript ---
         full_transcript_text = None
         if self.transcript_path.is_file():
             logging.info(f"Transcript file found at '{self.transcript_path}'. Skipping transcription.")
+            if self.progress_callback:
+                self.progress_callback(1 / total_steps) # Step 1: Audio Extraction (skipped)
+                self.progress_callback(2 / total_steps) # Step 2: Transcription (skipped)
+                self.progress_callback(3 / total_steps) # Step 3: Saving Transcripts (skipped)
             full_transcript_text = self.transcript_path.read_text(encoding="utf-8")
         else:
             if self._extract_audio():
+                if self.progress_callback: self.progress_callback(1 / total_steps)
+                
                 segments = self._transcribe_audio()
+                if self.progress_callback: self.progress_callback(2 / total_steps)
+                
                 if segments:
                     self._save_transcripts(segments)
+                    if self.progress_callback: self.progress_callback(3 / total_steps)
                     full_transcript_text = self._format_transcript_for_llm(segments)
         
         # --- Step 2: Get Highlights Text ---
@@ -51,9 +63,11 @@ class VideoProcessor:
         if full_transcript_text:
             if self.highlights_path.is_file():
                 logging.info(f"Highlights file found at '{self.highlights_path}'. Skipping LLM generation.")
+                if self.progress_callback: self.progress_callback(4 / total_steps) # Step 4: Highlight Generation (skipped)
                 highlights_text = self.highlights_path.read_text(encoding="utf-8")
             elif self.llm_client:
-                highlights_text = self._generate_and_save_highlights(full_transcript_text)
+                highlights_text = self._generate_and_save_highlights(full_transcript_text, self.llm_model)
+                if self.progress_callback: self.progress_callback(4 / total_steps)
             else:
                 logging.warning("OPENROUTER_API_KEY not set. Skipping highlight generation.")
 
@@ -62,6 +76,9 @@ class VideoProcessor:
             time_segments = self._parse_highlights_for_video(highlights_text)
             if time_segments:
                 self._create_highlight_video(time_segments)
+                if self.progress_callback: self.progress_callback(5 / total_steps)
+        else:
+             if self.progress_callback: self.progress_callback(5 / total_steps) # Mark as complete even if no video is made
         
         # --- Step 4: Cleanup ---
         self._cleanup()
@@ -86,9 +103,9 @@ class VideoProcessor:
 
 
     def _transcribe_audio(self) -> Optional[List[Dict[str, Any]]]:
-        logging.info(f"Loading Whisper model '{self.whisper_model_name}'...")
+        logging.info(f"Loading Whisper model '{self.whisper_model}'...")
         try:
-            model = whisper.load_model(self.whisper_model_name)
+            model = whisper.load_model(self.whisper_model)
             logging.info("Model loaded. Starting transcription...")
             result = model.transcribe(str(self.temp_audio_path))
             logging.info("Transcription complete.")
@@ -97,8 +114,8 @@ class VideoProcessor:
             logging.error(f"Error during transcription: {e}")
             return None
 
-    def _generate_and_save_highlights(self, full_transcript: str) -> Optional[str]:
-        highlights = self.llm_client.get_highlights_from_transcript(full_transcript)
+    def _generate_and_save_highlights(self, full_transcript: str, llm_model: str) -> Optional[str]:
+        highlights = self.llm_client.get_highlights_from_transcript(full_transcript, llm_model)
         if highlights:
             with open(self.highlights_path, "w", encoding="utf-8") as f: f.write(highlights)
             logging.info(f"Highlights saved to {self.highlights_path}")
