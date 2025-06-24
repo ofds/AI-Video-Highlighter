@@ -15,20 +15,13 @@ def is_ffmpeg_installed():
 def format_timestamp(seconds: float, srt_format: bool = False) -> str:
     """Formats time in seconds to HH:MM:SS or HH:MM:SS,ms for SRT."""
     assert seconds >= 0, "non-negative timestamp expected"
-    milliseconds = round(seconds * 1000.0)
-
-    hours = milliseconds // 3_600_000
-    milliseconds %= 3_600_000
-
-    minutes = milliseconds // 60_000
-    milliseconds %= 60_000
-
-    seconds = milliseconds // 1000
-    milliseconds %= 1000
-
+    s_int = int(seconds)
+    ms = int((seconds - s_int) * 1000)
+    m, s = divmod(s_int, 60)
+    h, m = divmod(m, 60)
     if srt_format:
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+    return f"{h:02d}:{m:02d}:{s:02d}"
 
 def export_highlights_to_txt(highlights_data: List[Dict[str, str]], output_path: Path):
     """Formats the list of highlights into a human-readable .txt file."""
