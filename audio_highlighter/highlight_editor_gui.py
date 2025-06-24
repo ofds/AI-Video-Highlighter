@@ -1,28 +1,31 @@
 import customtkinter as ctk
 import logging
-from typing import List, Dict, Callable, Tuple
+from typing import List, Dict, Callable, Tuple, Optional, Any
+from customtkinter import filedialog
+from pathlib import Path
+
+from .utils import export_highlights_to_txt, export_transcript_to_srt
 
 class HighlightEditorWindow(ctk.CTkToplevel):
     """A Toplevel window for editing and selecting video highlights."""
     
-    def __init__(self, master, highlights: List[Dict[str, str]], start_creation_callback: Callable[[List[Tuple[str, str]]], None]):
+    def __init__(self, master, highlights: List[Dict[str, str]], transcript_segments: Optional[List[Dict[str, Any]]], start_creation_callback: Callable[[List[Tuple[str, str]]], None]):
         super().__init__(master)
         self.transient(master)
-        self.grab_set()  # Make the window modal
+        self.grab_set()
         self.title("Interactive Highlight Editor")
         self.geometry("900x600")
 
         self.highlights = highlights
+        self.transcript_segments = transcript_segments
         self.start_creation_callback = start_creation_callback
         self.checkbox_vars = []
 
-        # --- Main Frame ---
         self.main_frame = ctk.CTkFrame(self)
         self.main_frame.pack(fill="both", expand=True, padx=10, pady=10)
         self.main_frame.grid_columnconfigure(0, weight=1)
         self.main_frame.grid_rowconfigure(1, weight=1)
 
-        # --- Top Controls Frame ---
         self.controls_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         self.controls_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         self.controls_frame.grid_columnconfigure(1, weight=1)
@@ -33,10 +36,20 @@ class HighlightEditorWindow(ctk.CTkToplevel):
         self.info_label = ctk.CTkLabel(self.controls_frame, text=f"Found {len(highlights)} potential highlights. Review and select below.", anchor="center")
         self.info_label.grid(row=0, column=1, sticky="ew")
 
-        self.create_video_button = ctk.CTkButton(self.controls_frame, text="Create Highlight Video", command=self.create_video_action, fg_color="green", hover_color="darkgreen")
-        self.create_video_button.grid(row=0, column=2, padx=(20, 0))
+        self.action_frame = ctk.CTkFrame(self.controls_frame, fg_color="transparent")
+        self.action_frame.grid(row=0, column=2, padx=(20, 0))
 
-        # --- Scrollable Frame for Highlights ---
+        self.export_highlights_button = ctk.CTkButton(self.action_frame, text="Export .txt", command=self.export_highlights_action, width=100)
+        self.export_highlights_button.pack(side="left", padx=(0, 5))
+        
+        self.export_srt_button = ctk.CTkButton(self.action_frame, text="Export .srt", command=self.export_srt_action, width=100)
+        self.export_srt_button.pack(side="left", padx=(0, 10))
+        if self.transcript_segments is None:
+            self.export_srt_button.configure(state="disabled", fg_color="gray")
+
+        self.create_video_button = ctk.CTkButton(self.action_frame, text="Create Video", command=self.create_video_action, fg_color="green", hover_color="darkgreen")
+        self.create_video_button.pack(side="left")
+
         self.scrollable_frame = ctk.CTkScrollableFrame(self.main_frame, label_text="Select Highlights to Include")
         self.scrollable_frame.grid(row=1, column=0, sticky="nsew")
         self.scrollable_frame.grid_columnconfigure(0, weight=1)
@@ -46,9 +59,8 @@ class HighlightEditorWindow(ctk.CTkToplevel):
     def populate_highlights(self):
         """Dynamically create checkboxes and labels for each highlight."""
         for i, highlight in enumerate(self.highlights):
-            var = ctk.BooleanVar(value=True)  # Default to selected
+            var = ctk.BooleanVar(value=True)
             
-            # Frame for each highlight entry
             entry_frame = ctk.CTkFrame(self.scrollable_frame)
             entry_frame.grid(row=i, column=0, sticky="ew", padx=5, pady=(0, 8))
             entry_frame.grid_columnconfigure(1, weight=1)
@@ -64,6 +76,34 @@ class HighlightEditorWindow(ctk.CTkToplevel):
             why_label.grid(row=1, column=1, sticky="ew", padx=(0, 10), pady=(0, 5))
             
             self.checkbox_vars.append(var)
+
+    def export_highlights_action(self):
+        """Opens a file dialog to save highlights as a .txt file."""
+        if not self.highlights:
+            logging.warning("No highlights available to export.")
+            return
+            
+        file_path_str = filedialog.asksaveasfilename(
+            title="Save Highlights As",
+            defaultextension=".txt",
+            filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")]
+        )
+        if file_path_str:
+            export_highlights_to_txt(self.highlights, Path(file_path_str))
+
+    def export_srt_action(self):
+        """Opens a file dialog to save the transcript as an .srt file."""
+        if not self.transcript_segments:
+            logging.warning("No transcript data available to export as SRT.")
+            return
+
+        file_path_str = filedialog.asksaveasfilename(
+            title="Save Transcript As",
+            defaultextension=".srt",
+            filetypes=[("SubRip Subtitle", "*.srt"), ("All Files", "*.*")]
+        )
+        if file_path_str:
+            export_transcript_to_srt(self.transcript_segments, Path(file_path_str))
 
     def toggle_all_checkboxes(self):
         """Selects or deselects all highlight checkboxes."""
@@ -83,16 +123,14 @@ class HighlightEditorWindow(ctk.CTkToplevel):
 
         if not selected_highlights:
             logging.warning("No highlights were selected. Aborting video creation.")
-            self.destroy()  # Close the editor window
+            self.destroy()
             return
 
         logging.info(f"Confirmed selection of {len(selected_highlights)} highlights for final video.")
         
-        # Extract just the time segments needed for the processor
         time_segments = [
             (h['start_time'], h['end_time']) for h in selected_highlights
         ]
         
-        # Use the callback to ask the main app to start the creation thread
         self.start_creation_callback(time_segments)
         self.destroy()

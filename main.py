@@ -5,7 +5,7 @@ import queue
 import threading
 from pathlib import Path
 from logging.handlers import QueueHandler
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Any
 
 from audio_highlighter.video_processor import VideoProcessor
 from audio_highlighter.config import OPENROUTER_API_KEY, AVAILABLE_WHISPER_MODELS, AVAILABLE_LLM_MODELS, DEFAULT_WHISPER_MODEL, DEFAULT_LLM_MODEL
@@ -30,7 +30,6 @@ class App(ctk.CTk):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1) 
 
-        # --- Top Frame for URL Input ---
         self.url_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.url_frame.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
         self.url_frame.grid_columnconfigure(1, weight=1)
@@ -41,7 +40,6 @@ class App(ctk.CTk):
         self.download_button = ctk.CTkButton(self.url_frame, text="Download Video", command=self.start_download_thread)
         self.download_button.grid(row=0, column=2, padx=(10, 0))
         
-        # --- Middle Frame for Local File and Processing ---
         self.local_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.local_frame.grid(row=1, column=0, padx=10, pady=5, sticky="ew")
         self.local_frame.grid_columnconfigure(1, weight=1)
@@ -52,7 +50,6 @@ class App(ctk.CTk):
         self.process_button = ctk.CTkButton(self.local_frame, text="Analyze Video", command=self.start_analysis_thread, state="disabled")
         self.process_button.grid(row=0, column=2, padx=(10, 0))
 
-        # --- Model Selection Frame ---
         self.model_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.model_frame.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
         self.model_frame.grid_columnconfigure(1, weight=1)
@@ -68,7 +65,6 @@ class App(ctk.CTk):
         self.llm_model_menu.grid(row=0, column=3, sticky="ew")
         self.llm_model_menu.set(DEFAULT_LLM_MODEL)
 
-        # --- Log Textbox and Status Bar ---
         self.log_textbox = ctk.CTkTextbox(self, state="disabled", text_color="#E0E0E0")
         self.log_textbox.grid(row=3, column=0, padx=10, pady=(5, 10), sticky="nsew")
         self.status_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -90,7 +86,6 @@ class App(ctk.CTk):
         state = "normal" if is_enabled else "disabled"
         self.download_button.configure(state=state)
         self.select_button.configure(state=state)
-        # Only enable the process button if a video is selected
         self.process_button.configure(state=state if self.video_path else "disabled")
         self.url_entry.configure(state=state)
         self.whisper_model_menu.configure(state=state)
@@ -170,10 +165,9 @@ class App(ctk.CTk):
         self.analysis_thread.start()
 
     def run_analysis(self):
-        """Target for the analysis thread. Calls the first part of the processor."""
         if not self.video_path:
             logging.error("No video file selected for analysis.")
-            self.after(0, self.on_analysis_finished, None) # Call callback to re-enable UI
+            self.after(0, self.on_analysis_finished, None, None)
             return
             
         try:
@@ -188,13 +182,13 @@ class App(ctk.CTk):
                 llm_model=llm_model,
                 progress_callback=self.update_progress
             )
-            highlights_data = self.processor.generate_highlights_data()
-            self.after(0, self.on_analysis_finished, highlights_data)
+            highlights_data, transcript_segments = self.processor.generate_highlights_data()
+            self.after(0, self.on_analysis_finished, highlights_data, transcript_segments)
         except Exception as e:
             logging.error(f"A critical error occurred during analysis: {e}", exc_info=True)
-            self.after(0, self.on_analysis_finished, None)
+            self.after(0, self.on_analysis_finished, None, None)
 
-    def on_analysis_finished(self, highlights_data: Optional[List[Dict[str, str]]]):
+    def on_analysis_finished(self, highlights_data: Optional[List[Dict[str, str]]], transcript_segments: Optional[List[Dict[str, Any]]]):
         """Callback run on main thread after analysis is complete."""
         self.progress_bar.grid_remove()
         
@@ -204,6 +198,7 @@ class App(ctk.CTk):
             self.editor_window = HighlightEditorWindow(
                 master=self,
                 highlights=highlights_data,
+                transcript_segments=transcript_segments,
                 start_creation_callback=self.start_creation_thread
             )
         else:
@@ -212,13 +207,12 @@ class App(ctk.CTk):
             self.set_ui_state(is_enabled=True)
 
     def start_creation_thread(self, time_segments: List[Tuple[str, str]]):
-        """Starts the final video creation in a thread."""
         if self.creation_thread and self.creation_thread.is_alive():
             logging.warning("A video creation process is already running.")
             return
             
         self.progress_bar.grid(row=1, column=0, sticky="ew", pady=(5,0))
-        self.progress_bar.set(0) # Or set to indeterminate mode
+        self.progress_bar.set(0)
         self.status_label.configure(text="Creating final highlight video...")
         
         self.creation_thread = threading.Thread(
@@ -229,7 +223,6 @@ class App(ctk.CTk):
         self.creation_thread.start()
         
     def run_video_creation(self, time_segments: List[Tuple[str, str]]):
-        """Target for the video creation thread."""
         try:
             if self.processor:
                 self.processor.create_highlight_video(time_segments)
@@ -247,12 +240,10 @@ class App(ctk.CTk):
         self.set_ui_state(is_enabled=True)
 
     def update_progress(self, value: float, text: str):
-        """Callback to update the progress bar and status label from a thread."""
         self.progress_bar.set(value)
         self.status_label.configure(text=text)
 
     def poll_log_queue(self):
-        """Periodically checks the log queue and updates the textbox."""
         while True:
             try:
                 record = self.log_queue.get(block=False)
@@ -264,17 +255,15 @@ class App(ctk.CTk):
                 self.log_textbox.insert("end", msg + "\n")
                 self.log_textbox.see("end")
                 self.log_textbox.configure(state="disabled")
-                if record.levelno >= logging.WARNING: # Show warnings and errors in status bar
+                if record.levelno >= logging.WARNING:
                     self.status_label.configure(text=record.getMessage())
         self.after(100, self.poll_log_queue)
 
 if __name__ == "__main__":
     if not OPENROUTER_API_KEY:
-        # This will not use a GUI, it's a console print for the developer
         print("FATAL: OPENROUTER_API_KEY environment variable not set.")
-        # Optionally, show an error in the GUI as well
     app = App()
     if not OPENROUTER_API_KEY:
         app.status_label.configure(text="FATAL: OPENROUTER_API_KEY environment variable not set.", text_color="red")
-        app.set_ui_state(is_enabled=False) # Disable UI if key is missing
+        app.set_ui_state(is_enabled=False)
     app.mainloop()
