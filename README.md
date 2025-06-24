@@ -18,7 +18,7 @@ You must have **FFmpeg** installed on your system and available in your system's
 
 First, clone the repository and navigate into the directory:
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/ofds/AI-Video-Highlighter.git
 cd audio-highlighter
 ```
 
